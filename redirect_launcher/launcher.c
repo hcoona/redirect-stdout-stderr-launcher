@@ -54,6 +54,7 @@ int launch(const char* stdout_file, const char* stderr_file,
   ec = pthread_create(&stdout_tid, NULL /* attr */, &CopyPipeToFile,
                       &stdout_context);
   if (ec != 0) {
+    // TODO(zhangshuai.ds): Use strerror_r()
     fprintf(stderr, "Failed to create STDOUT redirecting thread: %s",
             strerror(errno));
     exit_code = 3;
