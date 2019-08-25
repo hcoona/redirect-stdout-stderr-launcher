@@ -1,0 +1,5 @@
+cc_binary(
+    name = "redirect_launcher",
+    srcs = ["main.cc"],
+    visibility = ["//visibility:public"],
+)
