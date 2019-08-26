@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -200,7 +201,7 @@ void* CopyPipeToFile(void* context) {
   // TODO(zhangshuai.ds): Rolling the file.
   int output_fileno =
       open(the_context->output_file,
-           O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 777);
+           O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NONBLOCK, 777);
   if (output_fileno == -1) {
     fprintf(stderr, "Failed to open file %s: %s\n", the_context->output_file,
             strerror(errno));
@@ -208,12 +209,18 @@ void* CopyPipeToFile(void* context) {
   }
   loff_t output_file_offset = 0;
 
-  while (1) {
-    while (1) {
-      ssize_t count =
-          splice(the_context->readable_pipe_fd, NULL /* offset_in */,
-                 output_fileno, &output_file_offset, 1024, SPLICE_F_MOVE);
+  // Need one more round for remaining contents after received notification.
+  bool should_exit = false;
+
+  while (true) {
+    while (true) {
+      ssize_t count = splice(
+          the_context->readable_pipe_fd, NULL /* offset_in */, output_fileno,
+          &output_file_offset, 1024, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
       if (count == -1) {
+        if (errno == EAGAIN) {
+          break;
+        }
         fprintf(stderr, "Failed to splice contents from pipe %d to %s: %s\n",
                 the_context->readable_pipe_fd, the_context->output_file,
                 strerror(errno));
@@ -224,6 +231,10 @@ void* CopyPipeToFile(void* context) {
       }
       fprintf(stdout, "%zd bytes transferred from pipe %d to %s\n", count,
               the_context->readable_pipe_fd, the_context->output_file);
+    }
+
+    if (should_exit) {
+      break;
     }
 
     ec = pthread_mutex_lock(the_context->exit_mutex);
@@ -255,7 +266,7 @@ void* CopyPipeToFile(void* context) {
       exit(11);
     }
     if (ec == 0) {  // Should exit current thread
-      break;
+      should_exit = true;
     }
   }
 
