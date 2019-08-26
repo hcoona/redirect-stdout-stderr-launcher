@@ -2,16 +2,16 @@
 
 #define _POSIX_C_SOURCE 200809L
 
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "errno.h"
-#include "fcntl.h"
-#include "pthread.h"
-#include "sys/time.h"
-#include "sys/types.h"
-#include "sys/wait.h"
-#include "unistd.h"
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static const int kStdoutIndex = 0;
 static const int kStderrIndex = 1;
@@ -107,14 +107,14 @@ int launch(const char* stdout_file, const char* stderr_file,
   if (pid == 0) {  // Child process
     ec = dup2(stdout_write_fd(pipes),
               STDOUT_FILENO);  // Redirect STDOUT to our pipe.
-    if (ec != 0) {
+    if (ec == -1) {
       fprintf(stderr, "Failed to redirect STDOUT to pipe: %s\n",
               strerror(errno));
       return 20;
     }
     ec = dup2(stderr_write_fd(pipes),
               STDERR_FILENO);  // Redirect STDERR to our pipe.
-    if (ec != 0) {
+    if (ec == -1) {
       fprintf(stderr, "Failed to redirect STDERR to pipe: %s\n",
               strerror(errno));
       return 20;
@@ -126,7 +126,7 @@ int launch(const char* stdout_file, const char* stderr_file,
     close(stderr_read_fd(pipes));
     close(stderr_write_fd(pipes));
 
-    return execv(main_file, argv);
+    return execvp(main_file, argv);
   }
 
   int status;
