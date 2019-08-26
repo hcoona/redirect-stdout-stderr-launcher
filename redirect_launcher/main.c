@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#include "launcher.h"
+#include "redirect_launcher/launcher.h"
 
 int main(int argc, char** argv) {
   if (argc < 4) {

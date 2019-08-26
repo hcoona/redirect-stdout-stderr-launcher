@@ -3,6 +3,12 @@
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
+#ifdef __STDC_LIB_EXT1__
+#define __STDC_WANT_LIB_EXT1__ 1
+#else  // __STDC_LIB_EXT1__
+#define fprintf_s fprintf
+#endif  // __STDC_LIB_EXT1__
+
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -23,7 +29,7 @@ static ssize_t buffer_size;
 static void InitBufferSize(void) {
   buffer_size = sysconf(_SC_PAGESIZE);
   if (buffer_size < 0) {
-    fprintf(stderr, "Failed to get system page size: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to get system page size: %s\n", strerror(errno));
     buffer_size = kDefaultBufferSize;
   }
 }
@@ -53,7 +59,7 @@ struct ThreadContext {
 
 static void* CopyPipeToFile(void* context);
 static int RollOutputFile(const char* filename);
-static void FatalExit();
+static _Noreturn void FatalExit();
 
 int launch(const char* stdout_file, const char* stderr_file,
            const char* main_file, char* const argv[]) {
@@ -62,25 +68,25 @@ int launch(const char* stdout_file, const char* stderr_file,
 
   ec = pthread_once(&init_buffer_size_once, InitBufferSize);
   if (ec != 0) {
-    fprintf(stderr, "Failed to init buffer size: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to init buffer size: %s\n", strerror(errno));
     return 2;
   }
 
   int pipes[2][2];
   ec = pipe(pipes[kStdoutIndex]);
   if (ec != 0) {
-    fprintf(stderr, "Failed to create pipe: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to create pipe: %s\n", strerror(errno));
     return 2;
   }
   ec = pipe(pipes[kStderrIndex]);
   if (ec != 0) {
-    fprintf(stderr, "Failed to create pipe: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to create pipe: %s\n", strerror(errno));
     return 2;
   }
 
   pid_t pid = fork();
   if (pid == -1) {
-    fprintf(stderr, "Failed to fork child process: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to fork child process: %s\n", strerror(errno));
     return 4;
   }
 
@@ -88,15 +94,15 @@ int launch(const char* stdout_file, const char* stderr_file,
     ec = dup2(stdout_write_fd(pipes),
               STDOUT_FILENO);  // Redirect STDOUT to our pipe.
     if (ec == -1) {
-      fprintf(stderr, "Failed to redirect STDOUT to pipe: %s\n",
-              strerror(errno));
+      fprintf_s(stderr, "Failed to redirect STDOUT to pipe: %s\n",
+                strerror(errno));
       return 20;
     }
     ec = dup2(stderr_write_fd(pipes),
               STDERR_FILENO);  // Redirect STDERR to our pipe.
     if (ec == -1) {
-      fprintf(stderr, "Failed to redirect STDERR to pipe: %s\n",
-              strerror(errno));
+      fprintf_s(stderr, "Failed to redirect STDERR to pipe: %s\n",
+                strerror(errno));
       return 20;
     }
 
@@ -112,7 +118,7 @@ int launch(const char* stdout_file, const char* stderr_file,
   pthread_mutex_t exit_mutex;
   ec = pthread_mutex_init(&exit_mutex, NULL /* attr */);
   if (ec != 0) {
-    fprintf(stderr, "Failed to create exit mutex: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to create exit mutex: %s\n", strerror(errno));
     FatalExit();
   }
 
@@ -120,7 +126,7 @@ int launch(const char* stdout_file, const char* stderr_file,
   pthread_cond_t exit_cond;
   ec = pthread_cond_init(&exit_cond, NULL /* attr */);
   if (ec != 0) {
-    fprintf(stderr, "Failed to create exit condition: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to create exit condition: %s\n", strerror(errno));
     FatalExit();
   }
 
@@ -144,38 +150,38 @@ int launch(const char* stdout_file, const char* stderr_file,
                       &stdout_context);
   if (ec != 0) {
     // TODO(zhangshuai.ds): Use strerror_r()
-    fprintf(stderr, "Failed to create STDOUT redirecting thread: %s\n",
-            strerror(errno));
+    fprintf_s(stderr, "Failed to create STDOUT redirecting thread: %s\n",
+              strerror(errno));
     FatalExit();
   }
   ec = pthread_create(&stderr_tid, NULL /* attr */, &CopyPipeToFile,
                       &stderr_context);
   if (ec != 0) {
-    fprintf(stderr, "Failed to create STDERR redirecting thread: %s\n",
-            strerror(errno));
+    fprintf_s(stderr, "Failed to create STDERR redirecting thread: %s\n",
+              strerror(errno));
     FatalExit();
   }
 
   int status;
   if (waitpid(pid, &status, 0) < 0) {
-    fprintf(stderr, "Failed to wait child process: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to wait child process: %s\n", strerror(errno));
     FatalExit();
   }
 
   if (WIFEXITED(status)) {
     exit_code = WEXITSTATUS(status);
     // TODO(zhangshuai.ds): Use macro to eliminate debug log when releasing.
-    fprintf(stdout, "Child process finished with exit code: %d\n", exit_code);
+    fprintf_s(stdout, "Child process finished with exit code: %d\n", exit_code);
   } else {
-    fprintf(stderr, "Child process finished abnormally\n");
+    fprintf_s(stderr, "Child process finished abnormally\n");
     exit_code = 255;
   }
 
-  fprintf(stdout, "Notify children threads for exiting.\n");
+  fprintf_s(stdout, "Notify children threads for exiting.\n");
 
   ec = pthread_mutex_lock(&exit_mutex);
   if (ec != 0) {
-    fprintf(stderr, "Failed to lock exit mutex: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to lock exit mutex: %s\n", strerror(errno));
     return exit_code;
   }
 
@@ -183,14 +189,14 @@ int launch(const char* stdout_file, const char* stderr_file,
 
   ec = pthread_mutex_unlock(&exit_mutex);
   if (ec != 0) {
-    fprintf(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
+    fprintf_s(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
     return exit_code;
   }
 
   ec = pthread_cond_broadcast(&exit_cond);
   if (ec != 0) {
-    fprintf(stderr, "Failed to unblock redirecting threads: %s\n",
-            strerror(errno));
+    fprintf_s(stderr, "Failed to unblock redirecting threads: %s\n",
+              strerror(errno));
     // Skip joining children threads.
     return exit_code;
   }
@@ -198,15 +204,15 @@ int launch(const char* stdout_file, const char* stderr_file,
   if (stdout_tid != 0) {
     ec = pthread_join(stdout_tid, NULL);
     if (ec != 0) {
-      fprintf(stderr, "Failed to join STDOUT redirecting thread: %s\n",
-              strerror(errno));
+      fprintf_s(stderr, "Failed to join STDOUT redirecting thread: %s\n",
+                strerror(errno));
     }
   }
   if (stderr_tid != 0) {
     ec = pthread_join(stderr_tid, NULL);
     if (ec != 0) {
-      fprintf(stderr, "Failed to join STDERR redirecting thread: %s\n",
-              strerror(errno));
+      fprintf_s(stderr, "Failed to join STDERR redirecting thread: %s\n",
+                strerror(errno));
     }
   }
 
@@ -231,14 +237,13 @@ void* CopyPipeToFile(void* context) {
   struct ThreadContext* the_context = (struct ThreadContext*)context;
   int ec = 0;
 
-  // TODO(zhangshuai.ds): Rolling the file.
   int output_fileno =
       open(the_context->output_file,
            O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NONBLOCK,
            S_IRWXU | S_IRWXG | S_IRWXO);
   if (output_fileno == -1) {
-    fprintf(stderr, "Failed to open file %s: %s\n", the_context->output_file,
-            strerror(errno));
+    fprintf_s(stderr, "Failed to open file %s: %s\n", the_context->output_file,
+              strerror(errno));
     FatalExit();
   }
   loff_t output_file_offset = 0;
@@ -251,14 +256,14 @@ void* CopyPipeToFile(void* context) {
       if (output_file_offset > kOutputFileSizeThreshold) {
         ec = close(output_fileno);
         if (ec != 0) {
-          fprintf(stderr, "Failed to close %s: %s\n", the_context->output_file,
-                  strerror(errno));
+          fprintf_s(stderr, "Failed to close %s: %s\n",
+                    the_context->output_file, strerror(errno));
         }
 
         ec = RollOutputFile(the_context->output_file);
         if (ec != 0) {
-          fprintf(stderr, "Failed to roll %s: %s\n", the_context->output_file,
-                  strerror(errno));
+          fprintf_s(stderr, "Failed to roll %s: %s\n", the_context->output_file,
+                    strerror(errno));
         }
 
         output_fileno =
@@ -266,12 +271,13 @@ void* CopyPipeToFile(void* context) {
                  O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NONBLOCK,
                  S_IRWXU | S_IRWXG | S_IRWXO);
         if (output_fileno == -1) {
-          fprintf(stderr,
-                  "Failed to open file %s: %s; Fallback to /dev/null.\n",
-                  the_context->output_file, strerror(errno));
+          fprintf_s(stderr,
+                    "Failed to open file %s: %s; Fallback to /dev/null.\n",
+                    the_context->output_file, strerror(errno));
           output_fileno = open("/dev/null", O_WRONLY | O_NONBLOCK);
           if (output_fileno == -1) {
-            fprintf(stderr, "Failed to open /dev/null: %s\n", strerror(errno));
+            fprintf_s(stderr, "Failed to open /dev/null: %s\n",
+                      strerror(errno));
             FatalExit();
           }
         }
@@ -284,16 +290,16 @@ void* CopyPipeToFile(void* context) {
         if (errno == EAGAIN) {
           break;
         }
-        fprintf(stderr, "Failed to splice contents from pipe %d to %s: %s\n",
-                the_context->readable_pipe_fd, the_context->output_file,
-                strerror(errno));
+        fprintf_s(stderr, "Failed to splice contents from pipe %d to %s: %s\n",
+                  the_context->readable_pipe_fd, the_context->output_file,
+                  strerror(errno));
         break;
       }
       if (count == 0) {
         break;
       }
-      fprintf(stdout, "%zd bytes transferred from pipe %d to %s\n", count,
-              the_context->readable_pipe_fd, the_context->output_file);
+      fprintf_s(stdout, "%zd bytes transferred from pipe %d to %s\n", count,
+                the_context->readable_pipe_fd, the_context->output_file);
     }
 
     if (should_exit) {
@@ -302,18 +308,18 @@ void* CopyPipeToFile(void* context) {
 
     ec = pthread_mutex_lock(the_context->exit_mutex);
     if (ec != 0) {
-      fprintf(stderr, "Failed to lock exit mutex: %s\n", strerror(errno));
+      fprintf_s(stderr, "Failed to lock exit mutex: %s\n", strerror(errno));
       FatalExit();
     }
 
     struct timeval now;
     ec = gettimeofday(&now, NULL /* timezone */);
     if (ec != 0) {
-      fprintf(stderr, "Failed to get current time: %s\n", strerror(errno));
+      fprintf_s(stderr, "Failed to get current time: %s\n", strerror(errno));
       FatalExit();
     }
 
-    fprintf(stdout, "Wait 1 second for next round or exiting.\n");
+    fprintf_s(stdout, "Wait 1 second for next round or exiting.\n");
 
     // TODO(zhangshuai.ds): Load from settings
     struct timespec timeout = {.tv_sec = now.tv_sec + 1,
@@ -321,7 +327,7 @@ void* CopyPipeToFile(void* context) {
     ec = pthread_cond_timedwait(the_context->exit_cond, the_context->exit_mutex,
                                 &timeout);
     if (ec != 0 && ec != ETIMEDOUT) {
-      fprintf(stderr, "Failed to wait exit condition: %s\n", strerror(errno));
+      fprintf_s(stderr, "Failed to wait exit condition: %s\n", strerror(errno));
       FatalExit();
     }
 
@@ -329,26 +335,29 @@ void* CopyPipeToFile(void* context) {
 
     int ec_unlock = pthread_mutex_unlock(the_context->exit_mutex);
     if (ec_unlock != 0) {
-      fprintf(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
+      fprintf_s(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
       FatalExit();
     }
   }
 
   ec = close(output_fileno);
   if (ec != 0) {
-    fprintf(stderr, "Failed to close %s: %s\n", the_context->output_file,
-            strerror(errno));
+    fprintf_s(stderr, "Failed to close %s: %s\n", the_context->output_file,
+              strerror(errno));
   }
 
   return NULL;
 }
 
-int RollOutputFile(const char* filename) { return 0; }
+int RollOutputFile(const char* filename) {
+  // TODO(zhangshuai.ds): Implement it.
+  return 0;
+}
 
-void FatalExit() {
+_Noreturn void FatalExit() {
   if (kill(-getpgrp(), SIGKILL) != 0) {
-    fprintf(stderr, "Failed to kill child process group: %s\n",
-            strerror(errno));
-    abort();
+    fprintf_s(stderr, "Failed to kill child process group: %s\n",
+              strerror(errno));
   }
+  abort();
 }
