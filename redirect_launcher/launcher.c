@@ -7,10 +7,12 @@
 #define __STDC_WANT_LIB_EXT1__ 1
 #else  // __STDC_LIB_EXT1__
 #define fprintf_s fprintf
+#define snprintf_s snprintf
 #endif  // __STDC_LIB_EXT1__
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -33,6 +35,8 @@ static void InitBufferSize(void) {
     buffer_size = kDefaultBufferSize;
   }
 }
+
+static const size_t kPathMaxLength = _POSIX_PATH_MAX;
 
 static const int64_t kOutputFileSizeThreshold = 1 << 20;  // 1 MiB
 static const int kMaxBackupCount = 3;
@@ -281,6 +285,9 @@ void* CopyPipeToFile(void* context) {
             FatalExit();
           }
         }
+        output_file_offset = 0;
+        fprintf_s(stdout, "Open new file %s for rolling\n",
+                  the_context->output_file);
       }
 
       ssize_t count = splice(
@@ -350,7 +357,41 @@ void* CopyPipeToFile(void* context) {
 }
 
 int RollOutputFile(const char* filename) {
-  // TODO(zhangshuai.ds): Implement it.
+  int ec = 0;
+  char path_buffer[2][kPathMaxLength];
+  int current_index = 0;
+  int previous_index = 1;
+
+  snprintf_s(path_buffer[previous_index], sizeof(path_buffer), "%s.%d",
+             filename, kMaxBackupCount);
+  for (int i = kMaxBackupCount - 1; i >= 0; i--) {
+    if (i == 0) {
+      snprintf_s(path_buffer[current_index], sizeof(path_buffer), "%s",
+                 filename);
+    } else {
+      snprintf_s(path_buffer[current_index], sizeof(path_buffer), "%s.%d",
+                 filename, i);
+    }
+
+    ec = access(path_buffer[current_index], F_OK);
+    if (ec == 0) {
+      fprintf_s(stdout, "Renaming from %s to %s\n", path_buffer[current_index],
+                path_buffer[previous_index]);
+      ec = rename(path_buffer[current_index], path_buffer[previous_index]);
+      if (ec != 0) {
+        fprintf_s(stderr, "Failed to rename file from %s to %s: %s\n",
+                  path_buffer[current_index], path_buffer[previous_index],
+                  strerror(errno));
+        return ec;
+      }
+    }
+
+    // Swap current_index & previous_index.
+    current_index ^= previous_index;
+    previous_index ^= current_index;
+    current_index ^= previous_index;
+  }
+
   return 0;
 }
 
