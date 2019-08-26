@@ -17,7 +17,16 @@
 #include <unistd.h>
 
 static const ssize_t kDefaultBufferSize = 4096;
+static pthread_once_t init_buffer_size_once = PTHREAD_ONCE_INIT;
 static ssize_t buffer_size;
+
+static void InitBufferSize(void) {
+  buffer_size = sysconf(_SC_PAGESIZE);
+  if (buffer_size < 0) {
+    fprintf(stderr, "Failed to get system page size: %s\n", strerror(errno));
+    buffer_size = kDefaultBufferSize;
+  }
+}
 
 static const int kStdoutIndex = 0;
 static const int kStderrIndex = 1;
@@ -45,10 +54,10 @@ int launch(const char* stdout_file, const char* stderr_file,
   int ec;
   int exit_code = 0;
 
-  buffer_size = sysconf(_SC_PAGESIZE);
-  if (buffer_size < 0) {
-    fprintf(stderr, "Failed to get system page size: %s\n", strerror(errno));
-    buffer_size = kDefaultBufferSize;
+  ec = pthread_once(&init_buffer_size_once, InitBufferSize);
+  if (ec != 0) {
+    fprintf(stderr, "Failed to init buffer size: %s\n", strerror(errno));
+    return 2;
   }
 
   int pipes[2][2];
