@@ -1,5 +1,6 @@
 #include "redirect_launcher/launcher.h"
 
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
@@ -196,11 +197,39 @@ void* CopyPipeToFile(void* context) {
   struct ThreadContext* the_context = (struct ThreadContext*)context;
   int ec = 0;
 
+  // TODO(zhangshuai.ds): Rolling the file.
+  int output_fileno =
+      open(the_context->output_file,
+           O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 777);
+  if (output_fileno == -1) {
+    fprintf(stderr, "Failed to open file %s: %s\n", the_context->output_file,
+            strerror(errno));
+    exit(10);
+  }
+  loff_t output_file_offset = 0;
+
   while (1) {
+    while (1) {
+      ssize_t count =
+          splice(the_context->readable_pipe_fd, NULL /* offset_in */,
+                 output_fileno, &output_file_offset, 1024, SPLICE_F_MOVE);
+      if (count == -1) {
+        fprintf(stderr, "Failed to splice contents from pipe %d to %s: %s\n",
+                the_context->readable_pipe_fd, the_context->output_file,
+                strerror(errno));
+        break;
+      }
+      if (count == 0) {
+        break;
+      }
+      fprintf(stdout, "%zd bytes transferred from pipe %d to %s\n", count,
+              the_context->readable_pipe_fd, the_context->output_file);
+    }
+
     ec = pthread_mutex_lock(the_context->exit_mutex);
     if (ec != 0) {
       fprintf(stderr, "Failed to lock exit mutex: %s\n", strerror(errno));
-      exit(10);
+      exit(11);
     }
 
     struct timeval now;
@@ -215,30 +244,25 @@ void* CopyPipeToFile(void* context) {
                                .tv_nsec = now.tv_usec * 1000};
     ec = pthread_cond_timedwait(the_context->exit_cond, the_context->exit_mutex,
                                 &timeout);
-    if (ec != ETIMEDOUT) {
+    if (ec != 0 && ec != ETIMEDOUT) {
       fprintf(stderr, "Failed to wait exit condition: %s\n", strerror(errno));
-      exit(12);
+      exit(11);
     }
 
     int ec_unlock = pthread_mutex_unlock(the_context->exit_mutex);
     if (ec_unlock != 0) {
       fprintf(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
-      exit(10);
+      exit(11);
     }
     if (ec == 0) {  // Should exit current thread
       break;
     }
+  }
 
-    fprintf(stdout, "Copying from pipe %d to %s\n",
-            the_context->readable_pipe_fd, the_context->output_file);
-
-    // TODO(zhangshuai.ds): Rolling the file.
-    // int output_fileno =
-    //     open(the_context->output_file,
-    //          O_WRONLY | O_APPEND | O_CREAT | O_TRUNC | O_CLOEXEC, 777);
-
-    // TODO(zhangshuai.ds): Read from pipe, write to file.
-    // TODO(zhangshuai.ds): Use select() for timeout.
+  ec = close(output_fileno);
+  if (ec != 0) {
+    fprintf(stderr, "Failed to close %s: %s\n", the_context->output_file,
+            strerror(errno));
   }
 
   return NULL;
