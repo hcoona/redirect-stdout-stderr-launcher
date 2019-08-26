@@ -28,6 +28,9 @@ static void InitBufferSize(void) {
   }
 }
 
+static const int64_t kOutputFileSizeThreshold = 1 << 20;  // 1 MiB
+static const int kMaxBackupCount = 3;
+
 static const int kStdoutIndex = 0;
 static const int kStderrIndex = 1;
 static const int kMaxPipeCount = 1;
@@ -44,10 +47,13 @@ struct ThreadContext {
   const char* output_file;
   int readable_pipe_fd;
   pthread_mutex_t* exit_mutex;
+  bool* exiting;              // Guarded by exit_mutex;
   pthread_cond_t* exit_cond;  // Guarded by exit_mutex;
 };
 
 static void* CopyPipeToFile(void* context);
+static int RollOutputFile(const char* filename);
+static void FatalExit();
 
 int launch(const char* stdout_file, const char* stderr_file,
            const char* main_file, char* const argv[]) {
@@ -72,57 +78,10 @@ int launch(const char* stdout_file, const char* stderr_file,
     return 2;
   }
 
-  pthread_mutex_t exit_mutex;
-  ec = pthread_mutex_init(&exit_mutex, NULL /* attr */);
-  if (ec != 0) {
-    fprintf(stderr, "Failed to create exit mutex: %s\n", strerror(errno));
-    return 3;
-  }
-
-  pthread_cond_t exit_cond;
-  ec = pthread_cond_init(&exit_cond, NULL /* attr */);
-  if (ec != 0) {
-    fprintf(stderr, "Failed to create exit condition: %s\n", strerror(errno));
-    return 3;
-  }
-
-  struct ThreadContext stdout_context = {
-      .output_file = stdout_file,
-      .readable_pipe_fd = stdout_read_fd(pipes),
-      .exit_mutex = &exit_mutex,
-      .exit_cond = &exit_cond,
-  };
-  struct ThreadContext stderr_context = {
-      .output_file = stderr_file,
-      .readable_pipe_fd = stderr_read_fd(pipes),
-      .exit_mutex = &exit_mutex,
-      .exit_cond = &exit_cond,
-  };
-  pthread_t stdout_tid = 0;
-  pthread_t stderr_tid = 0;
-  ec = pthread_create(&stdout_tid, NULL /* attr */, &CopyPipeToFile,
-                      &stdout_context);
-  if (ec != 0) {
-    // TODO(zhangshuai.ds): Use strerror_r()
-    fprintf(stderr, "Failed to create STDOUT redirecting thread: %s\n",
-            strerror(errno));
-    exit_code = 3;
-    goto CLEANUP;
-  }
-  ec = pthread_create(&stderr_tid, NULL /* attr */, &CopyPipeToFile,
-                      &stderr_context);
-  if (ec != 0) {
-    fprintf(stderr, "Failed to create STDERR redirecting thread: %s\n",
-            strerror(errno));
-    exit_code = 3;
-    goto CLEANUP;
-  }
-
   pid_t pid = fork();
   if (pid == -1) {
     fprintf(stderr, "Failed to fork child process: %s\n", strerror(errno));
-    exit_code = 4;
-    goto CLEANUP;
+    return 4;
   }
 
   if (pid == 0) {  // Child process
@@ -150,28 +109,84 @@ int launch(const char* stdout_file, const char* stderr_file,
     return execvp(main_file, argv);
   }
 
+  pthread_mutex_t exit_mutex;
+  ec = pthread_mutex_init(&exit_mutex, NULL /* attr */);
+  if (ec != 0) {
+    fprintf(stderr, "Failed to create exit mutex: %s\n", strerror(errno));
+    FatalExit();
+  }
+
+  bool exiting = false;
+  pthread_cond_t exit_cond;
+  ec = pthread_cond_init(&exit_cond, NULL /* attr */);
+  if (ec != 0) {
+    fprintf(stderr, "Failed to create exit condition: %s\n", strerror(errno));
+    FatalExit();
+  }
+
+  struct ThreadContext stdout_context = {
+      .output_file = stdout_file,
+      .readable_pipe_fd = stdout_read_fd(pipes),
+      .exit_mutex = &exit_mutex,
+      .exiting = &exiting,
+      .exit_cond = &exit_cond,
+  };
+  struct ThreadContext stderr_context = {
+      .output_file = stderr_file,
+      .readable_pipe_fd = stderr_read_fd(pipes),
+      .exit_mutex = &exit_mutex,
+      .exiting = &exiting,
+      .exit_cond = &exit_cond,
+  };
+  pthread_t stdout_tid = 0;
+  pthread_t stderr_tid = 0;
+  ec = pthread_create(&stdout_tid, NULL /* attr */, &CopyPipeToFile,
+                      &stdout_context);
+  if (ec != 0) {
+    // TODO(zhangshuai.ds): Use strerror_r()
+    fprintf(stderr, "Failed to create STDOUT redirecting thread: %s\n",
+            strerror(errno));
+    FatalExit();
+  }
+  ec = pthread_create(&stderr_tid, NULL /* attr */, &CopyPipeToFile,
+                      &stderr_context);
+  if (ec != 0) {
+    fprintf(stderr, "Failed to create STDERR redirecting thread: %s\n",
+            strerror(errno));
+    FatalExit();
+  }
+
   int status;
   if (waitpid(pid, &status, 0) < 0) {
     fprintf(stderr, "Failed to wait child process: %s\n", strerror(errno));
-    ec = kill(-getpgid(pid), SIGKILL);
-    if (ec != 0) {
-      fprintf(stderr, "Failed to kill child process group: %s\n",
-              strerror(errno));
-    }
-
-    exit_code = 5;
-    goto CLEANUP;
+    FatalExit();
   }
 
   if (WIFEXITED(status)) {
     exit_code = WEXITSTATUS(status);
+    // TODO(zhangshuai.ds): Use macro to eliminate debug log when releasing.
     fprintf(stdout, "Child process finished with exit code: %d\n", exit_code);
   } else {
     fprintf(stderr, "Child process finished abnormally\n");
     exit_code = 255;
   }
 
-CLEANUP:
+  fprintf(stdout, "Notify children threads for exiting.\n");
+
+  ec = pthread_mutex_lock(&exit_mutex);
+  if (ec != 0) {
+    fprintf(stderr, "Failed to lock exit mutex: %s\n", strerror(errno));
+    return exit_code;
+  }
+
+  exiting = true;
+
+  ec = pthread_mutex_unlock(&exit_mutex);
+  if (ec != 0) {
+    fprintf(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
+    return exit_code;
+  }
+
   ec = pthread_cond_broadcast(&exit_cond);
   if (ec != 0) {
     fprintf(stderr, "Failed to unblock redirecting threads: %s\n",
@@ -224,7 +239,7 @@ void* CopyPipeToFile(void* context) {
   if (output_fileno == -1) {
     fprintf(stderr, "Failed to open file %s: %s\n", the_context->output_file,
             strerror(errno));
-    exit(10);
+    FatalExit();
   }
   loff_t output_file_offset = 0;
 
@@ -233,6 +248,35 @@ void* CopyPipeToFile(void* context) {
 
   while (true) {
     while (true) {
+      if (output_file_offset > kOutputFileSizeThreshold) {
+        ec = close(output_fileno);
+        if (ec != 0) {
+          fprintf(stderr, "Failed to close %s: %s\n", the_context->output_file,
+                  strerror(errno));
+        }
+
+        ec = RollOutputFile(the_context->output_file);
+        if (ec != 0) {
+          fprintf(stderr, "Failed to roll %s: %s\n", the_context->output_file,
+                  strerror(errno));
+        }
+
+        output_fileno =
+            open(the_context->output_file,
+                 O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NONBLOCK,
+                 S_IRWXU | S_IRWXG | S_IRWXO);
+        if (output_fileno == -1) {
+          fprintf(stderr,
+                  "Failed to open file %s: %s; Fallback to /dev/null.\n",
+                  the_context->output_file, strerror(errno));
+          output_fileno = open("/dev/null", O_WRONLY | O_NONBLOCK);
+          if (output_fileno == -1) {
+            fprintf(stderr, "Failed to open /dev/null: %s\n", strerror(errno));
+            FatalExit();
+          }
+        }
+      }
+
       ssize_t count = splice(
           the_context->readable_pipe_fd, NULL /* offset_in */, output_fileno,
           &output_file_offset, buffer_size, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
@@ -259,15 +303,17 @@ void* CopyPipeToFile(void* context) {
     ec = pthread_mutex_lock(the_context->exit_mutex);
     if (ec != 0) {
       fprintf(stderr, "Failed to lock exit mutex: %s\n", strerror(errno));
-      exit(11);
+      FatalExit();
     }
 
     struct timeval now;
     ec = gettimeofday(&now, NULL /* timezone */);
     if (ec != 0) {
       fprintf(stderr, "Failed to get current time: %s\n", strerror(errno));
-      exit(11);
+      FatalExit();
     }
+
+    fprintf(stdout, "Wait 1 second for next round or exiting.\n");
 
     // TODO(zhangshuai.ds): Load from settings
     struct timespec timeout = {.tv_sec = now.tv_sec + 1,
@@ -276,16 +322,15 @@ void* CopyPipeToFile(void* context) {
                                 &timeout);
     if (ec != 0 && ec != ETIMEDOUT) {
       fprintf(stderr, "Failed to wait exit condition: %s\n", strerror(errno));
-      exit(11);
+      FatalExit();
     }
+
+    should_exit = *(the_context->exiting);
 
     int ec_unlock = pthread_mutex_unlock(the_context->exit_mutex);
     if (ec_unlock != 0) {
       fprintf(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
-      exit(11);
-    }
-    if (ec == 0) {  // Should exit current thread
-      should_exit = true;
+      FatalExit();
     }
   }
 
@@ -296,4 +341,14 @@ void* CopyPipeToFile(void* context) {
   }
 
   return NULL;
+}
+
+int RollOutputFile(const char* filename) { return 0; }
+
+void FatalExit() {
+  if (kill(-getpgrp(), SIGKILL) != 0) {
+    fprintf(stderr, "Failed to kill child process group: %s\n",
+            strerror(errno));
+    abort();
+  }
 }
