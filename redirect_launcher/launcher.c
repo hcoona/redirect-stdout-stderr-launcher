@@ -208,17 +208,18 @@ void* CopyPipeToFile(void* context) {
                                .tv_nsec = now.tv_usec * 1000};
     ec = pthread_cond_timedwait(the_context->exit_cond, the_context->exit_mutex,
                                 &timeout);
-    if (ec == 0) {  // Should exit current thread
-      ec = pthread_mutex_unlock(the_context->exit_mutex);
-      if (ec != 0) {
-        fprintf(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
-        exit(10);
-      }
-      break;
-    }
     if (ec != ETIMEDOUT) {
       fprintf(stderr, "Failed to wait exit condition: %s\n", strerror(errno));
       exit(12);
+    }
+
+    int ec_unlock = pthread_mutex_unlock(the_context->exit_mutex);
+    if (ec_unlock != 0) {
+      fprintf(stderr, "Failed to unlock exit mutex: %s\n", strerror(errno));
+      exit(10);
+    }
+    if (ec == 0) {  // Should exit current thread
+      break;
     }
 
     fprintf(stdout, "Copying from pipe %d to %s\n",
