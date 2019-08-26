@@ -1,13 +1,13 @@
 # Redirect Launcher
 
-This is a tool help to redirect STDOUT & STDERR to files with rotating truncation support.
+This is a tool help to redirect STDOUT & STDERR to rolling files with size limitation.
 
 ## Getting Started
 
 ### Usage
 
 ```bash
-
+redirect_launcher $PWD/stdout.txt $PWD/stderr.txt <your program with args>
 ```
 
 ### Compile
@@ -18,4 +18,5 @@ python bazelisk.py //...
 
 ## TODO list
 
-Add `port.h` for posix functions on Windows.
+1. Read configuration file.
+1. Add `port.h` for posix functions on Windows.

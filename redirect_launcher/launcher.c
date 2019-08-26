@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,7 +133,12 @@ int launch(const char* stdout_file, const char* stderr_file,
   int status;
   if (waitpid(pid, &status, 0) < 0) {
     fprintf(stderr, "Failed to wait child process: %s\n", strerror(errno));
-    // TODO(zhangshuai.ds): Kill child process
+    ec = kill(-getpgid(pid), SIGKILL);
+    if (ec != 0) {
+      fprintf(stderr, "Failed to kill child process group: %s\n",
+              strerror(errno));
+    }
+
     exit_code = 5;
     goto CLEANUP;
   }
@@ -150,7 +156,8 @@ CLEANUP:
   if (ec != 0) {
     fprintf(stderr, "Failed to unblock redirecting threads: %s\n",
             strerror(errno));
-    // TODO(zhangshuai.ds): Kill child threads
+    // Skip joining children threads.
+    return exit_code;
   }
 
   if (stdout_tid != 0) {
