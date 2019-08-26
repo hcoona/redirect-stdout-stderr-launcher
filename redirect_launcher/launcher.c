@@ -16,6 +16,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static const ssize_t kDefaultBufferSize = 4096;
+static ssize_t buffer_size;
+
 static const int kStdoutIndex = 0;
 static const int kStderrIndex = 1;
 static const int kMaxPipeCount = 1;
@@ -41,6 +44,12 @@ int launch(const char* stdout_file, const char* stderr_file,
            const char* main_file, char* const argv[]) {
   int ec;
   int exit_code = 0;
+
+  buffer_size = sysconf(_SC_PAGESIZE);
+  if (buffer_size < 0) {
+    fprintf(stderr, "Failed to get system page size: %s\n", strerror(errno));
+    buffer_size = kDefaultBufferSize;
+  }
 
   int pipes[2][2];
   ec = pipe(pipes[kStdoutIndex]);
@@ -201,7 +210,8 @@ void* CopyPipeToFile(void* context) {
   // TODO(zhangshuai.ds): Rolling the file.
   int output_fileno =
       open(the_context->output_file,
-           O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NONBLOCK, 777);
+           O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NONBLOCK,
+           S_IRWXU | S_IRWXG | S_IRWXO);
   if (output_fileno == -1) {
     fprintf(stderr, "Failed to open file %s: %s\n", the_context->output_file,
             strerror(errno));
@@ -216,7 +226,7 @@ void* CopyPipeToFile(void* context) {
     while (true) {
       ssize_t count = splice(
           the_context->readable_pipe_fd, NULL /* offset_in */, output_fileno,
-          &output_file_offset, 1024, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+          &output_file_offset, buffer_size, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
       if (count == -1) {
         if (errno == EAGAIN) {
           break;
