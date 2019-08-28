@@ -2,6 +2,8 @@
 
 This is a tool help to redirect STDOUT & STDERR to rolling files with size limitation.
 
+**Moved to `https://github.com/hcoona/one/tree/master/redirect_launcher`.**
+
 ## Getting Started
 
 ### Usage
